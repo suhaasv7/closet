@@ -395,7 +395,7 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
         <div className="widget">
           <div className="widget-title">02. Wardrobe Value</div>
           <div className="widget-value">${totalValueMock} USD</div>
-          <div className="widget-subtext">Estimated current collection value</div>
+          <div className="widget-subtext">Estimated collection worth</div>
         </div>
         <div className="widget rec-widget">
           <div className="rec-header">
@@ -433,7 +433,8 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
                 </div>
               </div>
               <button className="add-btn" onClick={() => setShowAddModal(true)}>
-                Add Piece
+                <span className="add-btn-icon">+</span>
+                <span className="add-btn-text">Add Piece</span>
               </button>
             </div>
 
@@ -497,9 +498,8 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
               <div className="chat-history">
                 {advisorChat.map((msg) => (
                   <div key={msg.id} className={`chat-msg ${msg.sender === 'bot' ? 'bot' : 'user'}`}>
-                    {/* Format response beautifully */}
                     {msg.sender === 'bot' && <div style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--accent)', letterSpacing: '0.05em', marginBottom: '4px' }}>Recommendation</div>}
-                    <p style={{ fontStyle: msg.sender === 'bot' ? 'normal' : 'normal' }}>
+                    <p>
                       {msg.text.split('**').map((chunk, i) => i % 2 === 1 ? <strong key={i} style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{chunk}</strong> : chunk)}
                     </p>
                   </div>
@@ -547,7 +547,7 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
               </div>
 
               {isGeneratingOutfit ? (
-                <div style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+                <div style={{ padding: '40px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
                   <div className="shimmer" style={{ width: '48px', height: '48px', borderRadius: '50%' }}></div>
                   <div style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Curating items from wardrobe...</div>
                 </div>
@@ -589,7 +589,7 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
                   </div>
                 </div>
               ) : (
-                <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+                <div style={{ padding: '40px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
                   Select a look above to generate suggestions.
                 </div>
               )}
@@ -854,6 +854,42 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
           </div>
         </div>
       )}
+
+      {/* Sticky Bottom Navigation for Mobile Devices */}
+      <nav className="bottom-nav">
+        <button 
+          className={`bottom-nav-btn ${activeTab === 'closet' ? 'active' : ''}`}
+          onClick={() => setActiveTab('closet')}
+        >
+          <svg className="bottom-nav-icon" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <rect x="3" y="3" width="7" height="9" rx="1"></rect>
+            <rect x="14" y="3" width="7" height="5" rx="1"></rect>
+            <rect x="14" y="12" width="7" height="9" rx="1"></rect>
+            <rect x="3" y="16" width="7" height="5" rx="1"></rect>
+          </svg>
+          <span>Collection</span>
+        </button>
+        <button 
+          className={`bottom-nav-btn ${activeTab === 'advisor' ? 'active' : ''}`}
+          onClick={() => setActiveTab('advisor')}
+        >
+          <svg className="bottom-nav-icon" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span>Advisor</span>
+        </button>
+        <button 
+          className={`bottom-nav-btn ${activeTab === 'analytics' ? 'active' : ''}`}
+          onClick={() => setActiveTab('analytics')}
+        >
+          <svg className="bottom-nav-icon" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <line x1="18" y1="20" x2="18" y2="10"></line>
+            <line x1="12" y1="20" x2="12" y2="4"></line>
+            <line x1="6" y1="20" x2="6" y2="14"></line>
+          </svg>
+          <span>Insights</span>
+        </button>
+      </nav>
     </div>
   );
 }
