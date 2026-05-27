@@ -59,8 +59,74 @@ const INITIAL_CLOSET = [
   }
 ];
 
+// Helper to compress uploaded image using HTML5 Canvas
+const compressImage = (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 500;
+        const MAX_HEIGHT = 500;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Compress as image/jpeg at 0.7 quality
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        resolve(dataUrl);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
+
 function App() {
-  const [clothingItems, setClothingItems] = useState(INITIAL_CLOSET);
+  const [clothingItems, setClothingItems] = useState(() => {
+    const saved = localStorage.getItem('closet_items');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error parsing closet items", e);
+      }
+    }
+    return INITIAL_CLOSET;
+  });
+
+  const [savedOutfits, setSavedOutfits] = useState(() => {
+    const saved = localStorage.getItem('closet_outfits');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error parsing saved outfits", e);
+      }
+    }
+    return [];
+  });
+
   const [activeTab, setActiveTab] = useState('closet');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
@@ -80,6 +146,33 @@ function App() {
   const [formNotes, setFormNotes] = useState('');
   const [formImage, setFormImage] = useState(null);
   const [formImagePreview, setFormImagePreview] = useState('');
+
+  // Edit Mode inside Details Modal state
+  const [isEditingDetail, setIsEditingDetail] = useState(false);
+  const [editFormTitle, setEditFormTitle] = useState('');
+  const [editFormBrand, setEditFormBrand] = useState('');
+  const [editFormCategory, setEditFormCategory] = useState('Tops');
+  const [editFormSize, setEditFormSize] = useState('');
+  const [editFormColor, setEditFormColor] = useState('');
+  const [editFormColorHex, setEditFormColorHex] = useState('#8C7853');
+  const [editFormTags, setEditFormTags] = useState('');
+  const [editFormNotes, setEditFormNotes] = useState('');
+  const [editFormImagePreview, setEditFormImagePreview] = useState('');
+
+  // Outfit Builder Panel/Tab state
+  const [builderName, setBuilderName] = useState('');
+  const [builderNotes, setBuilderNotes] = useState('');
+  const [selectedBuilderTop, setSelectedBuilderTop] = useState(null);
+  const [selectedBuilderBottom, setSelectedBuilderBottom] = useState(null);
+  const [selectedBuilderOuterwear, setSelectedBuilderOuterwear] = useState(null);
+  const [selectedBuilderShoes, setSelectedBuilderShoes] = useState(null);
+
+  // Custom Toast State
+  const [toast, setToast] = useState({ show: false, message: '' });
+  const toastTimeoutRef = useRef(null);
+
+  // Custom Confirmation Modal State
+  const [confirmModal, setConfirmModal] = useState({ show: false, message: '', onConfirm: null });
 
   // AI Outfit Advisor state
   const [outfitOccasion, setOutfitOccasion] = useState('Casual Sunday');
@@ -102,12 +195,42 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [advisorChat, isChatting]);
 
+  // Sync to local storage
+  useEffect(() => {
+    localStorage.setItem('closet_items', JSON.stringify(clothingItems));
+  }, [clothingItems]);
+
+  useEffect(() => {
+    localStorage.setItem('closet_outfits', JSON.stringify(savedOutfits));
+  }, [savedOutfits]);
+
   // Generate outfit recommendation based on occasion
   useEffect(() => {
     if (activeTab === 'advisor' && !generatedOutfit) {
       handleGenerateOutfit(outfitOccasion);
     }
   }, [activeTab]);
+
+  // Show Toast Helper
+  const showToast = (message) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast({ show: true, message });
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast({ show: false, message: '' });
+    }, 3000);
+  };
+
+  // Custom Confirm Trigger
+  const triggerConfirm = (message, onConfirm) => {
+    setConfirmModal({
+      show: true,
+      message,
+      onConfirm: () => {
+        onConfirm();
+        setConfirmModal({ show: false, message: '', onConfirm: null });
+      }
+    });
+  };
 
   // Category counts
   const categoryCounts = {
@@ -119,14 +242,51 @@ function App() {
   };
 
   // Wardrobe value estimation helper
-  const totalValueMock = clothingItems.length * 145; // mock value
+  const totalValueMock = clothingItems.reduce((acc, curr) => {
+    const valMap = { Tops: 120, Bottoms: 180, Outerwear: 290, Shoes: 220 };
+    return acc + (valMap[curr.category] || 150);
+  }, 0);
 
-  // Handle image upload and display preview
-  const handleImageChange = (e) => {
+  // Reset closet back to defaults
+  const handleResetCloset = () => {
+    triggerConfirm('Reset entire wardrobe collection back to original factory demo items?', () => {
+      setClothingItems(INITIAL_CLOSET);
+      setSavedOutfits([]);
+      showToast('Closet reset back to demo data');
+    });
+  };
+
+  // Handle image upload and display preview (compressed)
+  const handleImageChange = async (e) => {
     const file = e.target.files[0];
     if (file) {
-      setFormImage(file);
-      setFormImagePreview(URL.createObjectURL(file));
+      try {
+        showToast('Compressing wardrobe photo...');
+        const compressed = await compressImage(file);
+        setFormImage(file);
+        setFormImagePreview(compressed);
+        showToast('Photo optimized successfully');
+      } catch (err) {
+        console.error("Compression failed, using local URL", err);
+        setFormImage(file);
+        setFormImagePreview(URL.createObjectURL(file));
+      }
+    }
+  };
+
+  // Handle image upload in Edit form
+  const handleEditImageChange = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      try {
+        showToast('Optimizing item photo...');
+        const compressed = await compressImage(file);
+        setEditFormImagePreview(compressed);
+        showToast('Photo optimized successfully');
+      } catch (err) {
+        console.error("Edit compression failed", err);
+        setEditFormImagePreview(URL.createObjectURL(file));
+      }
     }
   };
 
@@ -154,13 +314,14 @@ function App() {
       size: formSize || 'N/A',
       color: formColor || 'Multi',
       colorHex: formColorHex,
-      tags: formTags ? formTags.split(',').map(t => t.trim()) : [],
+      tags: formTags ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
       notes: formNotes || 'No notes added.'
     };
 
     setClothingItems([newItem, ...clothingItems]);
     setShowAddModal(false);
     resetForm();
+    showToast('Item added to collection');
   };
 
   const resetForm = () => {
@@ -176,13 +337,117 @@ function App() {
     setFormImagePreview('');
   };
 
+  // Enter edit mode for a piece
+  const handleEnterEditMode = (item) => {
+    setEditFormTitle(item.title);
+    setEditFormBrand(item.brand);
+    setEditFormCategory(item.category);
+    setEditFormSize(item.size);
+    setEditFormColor(item.color);
+    setEditFormColorHex(item.colorHex || '#8C7853');
+    setEditFormTags(item.tags.join(', '));
+    setEditFormNotes(item.notes);
+    setEditFormImagePreview(item.image);
+    setIsEditingDetail(true);
+  };
+
+  // Save changes to edited piece
+  const handleSaveEdit = (e) => {
+    e.preventDefault();
+    if (!editFormTitle.trim()) return;
+
+    const updatedItems = clothingItems.map(item => {
+      if (item.id === showDetailModal.id) {
+        const updated = {
+          ...item,
+          title: editFormTitle,
+          brand: editFormBrand || 'Unbranded',
+          category: editFormCategory,
+          size: editFormSize || 'N/A',
+          color: editFormColor || 'Multi',
+          colorHex: editFormColorHex,
+          tags: editFormTags ? editFormTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+          notes: editFormNotes || 'No notes added.',
+          image: editFormImagePreview
+        };
+        // Update detail modal active state as well
+        setShowDetailModal(updated);
+        return updated;
+      }
+      return item;
+    });
+
+    setClothingItems(updatedItems);
+    setIsEditingDetail(false);
+    showToast('Changes saved to wardrobe');
+  };
+
   // Delete Item from closet
   const handleDeleteItem = (itemId) => {
-    if (confirm('Are you sure you want to remove this item from your closet?')) {
+    triggerConfirm('Are you sure you want to permanently remove this piece from your collection?', () => {
       setClothingItems(clothingItems.filter(item => item.id !== itemId));
       setShowDetailModal(null);
-    }
+      showToast('Piece removed from collection');
+    });
   };
+
+  // Custom Outfit Creation
+  const handleSaveOutfit = (e) => {
+    e.preventDefault();
+    if (!builderName.trim()) {
+      showToast('Please name your outfit');
+      return;
+    }
+
+    const newOutfit = {
+      id: Date.now().toString(),
+      name: builderName,
+      notes: builderNotes || 'No notes added.',
+      topsId: selectedBuilderTop?.id || null,
+      bottomsId: selectedBuilderBottom?.id || null,
+      outerwearId: selectedBuilderOuterwear?.id || null,
+      shoesId: selectedBuilderShoes?.id || null,
+      createdAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    };
+
+    setSavedOutfits([newOutfit, ...savedOutfits]);
+    setBuilderName('');
+    setBuilderNotes('');
+    setSelectedBuilderTop(null);
+    setSelectedBuilderBottom(null);
+    setSelectedBuilderOuterwear(null);
+    setSelectedBuilderShoes(null);
+    setActiveTab('lookbook');
+    showToast('Look saved to Lookbook');
+  };
+
+  // Save AI Recommended Outfit
+  const handleSaveAIOutfit = () => {
+    if (!generatedOutfit) return;
+    
+    const newOutfit = {
+      id: Date.now().toString(),
+      name: `AI styling: ${outfitOccasion}`,
+      notes: generatedOutfit.description,
+      topsId: generatedOutfit.tops?.id || null,
+      bottomsId: generatedOutfit.bottoms?.id || null,
+      outerwearId: generatedOutfit.outerwear?.id || null,
+      shoesId: generatedOutfit.shoes?.id || null,
+      createdAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    };
+
+    setSavedOutfits([newOutfit, ...savedOutfits]);
+    showToast('AI Look saved to Lookbook');
+  };
+
+  // Delete outfit from lookbook
+  const handleDeleteOutfit = (outfitId) => {
+    triggerConfirm('Are you sure you want to delete this look from your Lookbook?', () => {
+      setSavedOutfits(savedOutfits.filter(o => o.id !== outfitId));
+      showToast('Look deleted');
+    });
+  };
+
 
   // Trigger AI Outfit Recommendation (with actual Gemini fallback)
   const handleGenerateOutfit = async (occasion) => {
@@ -359,26 +624,32 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
     <div className="container animate-fade-in-up">
       {/* Navigation Header */}
       <header className="navbar">
-        <div className="logo-container">
+        <div className="logo-container" onClick={handleResetCloset} style={{ cursor: 'pointer' }} title="Reset Wardrobe to default demo items">
           <div className="logo-icon">C</div>
           <div className="logo-text">CLOSET.AI</div>
         </div>
         <nav className="nav-links">
           <button 
             className={`nav-btn ${activeTab === 'closet' ? 'active' : ''}`}
-            onClick={() => setActiveTab('closet')}
+            onClick={() => { setActiveTab('closet'); setIsEditingDetail(false); }}
           >
             Collection
           </button>
           <button 
+            className={`nav-btn ${activeTab === 'lookbook' ? 'active' : ''}`}
+            onClick={() => { setActiveTab('lookbook'); setIsEditingDetail(false); }}
+          >
+            Lookbook
+          </button>
+          <button 
             className={`nav-btn ${activeTab === 'advisor' ? 'active' : ''}`}
-            onClick={() => setActiveTab('advisor')}
+            onClick={() => { setActiveTab('advisor'); setIsEditingDetail(false); }}
           >
             Stylist Advisor
           </button>
           <button 
             className={`nav-btn ${activeTab === 'analytics' ? 'active' : ''}`}
-            onClick={() => setActiveTab('analytics')}
+            onClick={() => { setActiveTab('analytics'); setIsEditingDetail(false); }}
           >
             Wardrobe Insights
           </button>
@@ -403,7 +674,13 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
             <div className="weather-badge">72°F / Sunny</div>
           </div>
           <div className="rec-content">
-            A beautiful, clear day. We suggest pairing the <strong>Classic Denim Jacket</strong> layered over the <strong>Minimalist Leather Sneakers</strong> for a comfortable, structured casual look.
+            {clothingItems.length > 0 ? (
+              <>
+                A beautiful, clear day. We suggest pairing the <strong>{clothingItems.find(i => i.category === 'Outerwear')?.title || 'Classic Layer'}</strong> with your <strong>{clothingItems.find(i => i.category === 'Shoes')?.title || 'Clean Shoes'}</strong> for a comfortable, structured casual look.
+              </>
+            ) : (
+              "Add items to your wardrobe to receive real-time, weather-informed styling recommendations."
+            )}
           </div>
         </div>
       </section>
@@ -482,6 +759,270 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* LOOKBOOK / MY OUTFITS TAB */}
+        {activeTab === 'lookbook' && (
+          <div>
+            <div className="toolbar" style={{ marginBottom: '24px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <h2 style={{ fontSize: '24px', fontFamily: 'var(--font-serif)', fontWeight: '500' }}>Your Curated Lookbook</h2>
+                <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Mix and match pieces to craft bespoke outfits</p>
+              </div>
+            </div>
+
+            {/* Custom Outfit Builder Section */}
+            <div className="builder-layout" style={{ marginBottom: '48px', borderBottom: '1px solid var(--border-color)', paddingBottom: '40px' }}>
+              
+              {/* Outfit Selection Columns */}
+              <div className="builder-selection-section">
+                <h3 style={{ fontSize: '18px', fontFamily: 'var(--font-serif)', marginBottom: '8px' }}>Mix & Match Canvas</h3>
+                
+                {/* Category: Tops */}
+                <div className="builder-category-box">
+                  <div className="builder-category-title">
+                    <span>Tops Selection</span>
+                    {selectedBuilderTop && (
+                      <span className="builder-category-selected-name">✓ {selectedBuilderTop.title}</span>
+                    )}
+                  </div>
+                  <div className="builder-items-scroll">
+                    {clothingItems.filter(i => i.category === 'Tops').map(item => (
+                      <div 
+                        key={item.id} 
+                        className={`builder-item-card ${selectedBuilderTop?.id === item.id ? 'selected' : ''}`}
+                        onClick={() => setSelectedBuilderTop(selectedBuilderTop?.id === item.id ? null : item)}
+                      >
+                        <div className="builder-item-img-box">
+                          <img src={item.image} alt="" className="builder-item-img" />
+                        </div>
+                        <div className="builder-item-title">{item.title}</div>
+                      </div>
+                    ))}
+                    {clothingItems.filter(i => i.category === 'Tops').length === 0 && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No tops available. Add some to get started.</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Category: Bottoms */}
+                <div className="builder-category-box">
+                  <div className="builder-category-title">
+                    <span>Bottoms Selection</span>
+                    {selectedBuilderBottom && (
+                      <span className="builder-category-selected-name">✓ {selectedBuilderBottom.title}</span>
+                    )}
+                  </div>
+                  <div className="builder-items-scroll">
+                    {clothingItems.filter(i => i.category === 'Bottoms').map(item => (
+                      <div 
+                        key={item.id} 
+                        className={`builder-item-card ${selectedBuilderBottom?.id === item.id ? 'selected' : ''}`}
+                        onClick={() => setSelectedBuilderBottom(selectedBuilderBottom?.id === item.id ? null : item)}
+                      >
+                        <div className="builder-item-img-box">
+                          <img src={item.image} alt="" className="builder-item-img" />
+                        </div>
+                        <div className="builder-item-title">{item.title}</div>
+                      </div>
+                    ))}
+                    {clothingItems.filter(i => i.category === 'Bottoms').length === 0 && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No bottoms available.</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Category: Outerwear */}
+                <div className="builder-category-box">
+                  <div className="builder-category-title">
+                    <span>Outerwear Selection</span>
+                    {selectedBuilderOuterwear && (
+                      <span className="builder-category-selected-name">✓ {selectedBuilderOuterwear.title}</span>
+                    )}
+                  </div>
+                  <div className="builder-items-scroll">
+                    {clothingItems.filter(i => i.category === 'Outerwear').map(item => (
+                      <div 
+                        key={item.id} 
+                        className={`builder-item-card ${selectedBuilderOuterwear?.id === item.id ? 'selected' : ''}`}
+                        onClick={() => setSelectedBuilderOuterwear(selectedBuilderOuterwear?.id === item.id ? null : item)}
+                      >
+                        <div className="builder-item-img-box">
+                          <img src={item.image} alt="" className="builder-item-img" />
+                        </div>
+                        <div className="builder-item-title">{item.title}</div>
+                      </div>
+                    ))}
+                    {clothingItems.filter(i => i.category === 'Outerwear').length === 0 && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No outerwear available (Optional).</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Category: Shoes */}
+                <div className="builder-category-box">
+                  <div className="builder-category-title">
+                    <span>Shoes Selection</span>
+                    {selectedBuilderShoes && (
+                      <span className="builder-category-selected-name">✓ {selectedBuilderShoes.title}</span>
+                    )}
+                  </div>
+                  <div className="builder-items-scroll">
+                    {clothingItems.filter(i => i.category === 'Shoes').map(item => (
+                      <div 
+                        key={item.id} 
+                        className={`builder-item-card ${selectedBuilderShoes?.id === item.id ? 'selected' : ''}`}
+                        onClick={() => setSelectedBuilderShoes(selectedBuilderShoes?.id === item.id ? null : item)}
+                      >
+                        <div className="builder-item-img-box">
+                          <img src={item.image} alt="" className="builder-item-img" />
+                        </div>
+                        <div className="builder-item-title">{item.title}</div>
+                      </div>
+                    ))}
+                    {clothingItems.filter(i => i.category === 'Shoes').length === 0 && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No shoes available.</div>
+                    )}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Outfit Preview and Meta Details Form */}
+              <div className="builder-preview-panel">
+                <div>
+                  <h3 style={{ fontSize: '18px', fontFamily: 'var(--font-serif)', marginBottom: '16px' }}>Curated Preview</h3>
+                  
+                  {/* Grid layout of selected items */}
+                  <div className="outfit-card-grid" style={{ maxWidth: '300px', margin: '0 auto 20px auto' }}>
+                    <div className="outfit-card-img-box">
+                      {selectedBuilderTop ? (
+                        <img src={selectedBuilderTop.image} alt="" className="outfit-card-img" />
+                      ) : (
+                        <span className="outfit-card-img-placeholder">Top</span>
+                      )}
+                    </div>
+                    <div className="outfit-card-img-box">
+                      {selectedBuilderBottom ? (
+                        <img src={selectedBuilderBottom.image} alt="" className="outfit-card-img" />
+                      ) : (
+                        <span className="outfit-card-img-placeholder">Bottom</span>
+                      )}
+                    </div>
+                    <div className="outfit-card-img-box">
+                      {selectedBuilderOuterwear ? (
+                        <img src={selectedBuilderOuterwear.image} alt="" className="outfit-card-img" />
+                      ) : (
+                        <span className="outfit-card-img-placeholder">Outerwear</span>
+                      )}
+                    </div>
+                    <div className="outfit-card-img-box">
+                      {selectedBuilderShoes ? (
+                        <img src={selectedBuilderShoes.image} alt="" className="outfit-card-img" />
+                      ) : (
+                        <span className="outfit-card-img-placeholder">Shoes</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleSaveOutfit}>
+                    <div className="builder-form-group">
+                      <label className="form-label">Look Name *</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        placeholder="e.g. Crisp Autumn Layering" 
+                        value={builderName}
+                        onChange={(e) => setBuilderName(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="builder-form-group">
+                      <label className="form-label">Stylist Notes</label>
+                      <textarea 
+                        className="form-control" 
+                        rows="3" 
+                        placeholder="Explain style context, weather preferences, or aesthetic keys..." 
+                        value={builderNotes}
+                        onChange={(e) => setBuilderNotes(e.target.value)}
+                      />
+                    </div>
+                    <button 
+                      type="submit" 
+                      className="add-btn" 
+                      style={{ width: '100%', marginTop: '8px' }}
+                      disabled={!selectedBuilderTop && !selectedBuilderBottom && !selectedBuilderOuterwear && !selectedBuilderShoes}
+                    >
+                      Save Look
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Saved Outfits Gallery */}
+            <div>
+              <h3 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', marginBottom: '16px' }}>Saved Outfits ({savedOutfits.length})</h3>
+              
+              {savedOutfits.length === 0 ? (
+                <div style={{ padding: '60px 0', textAlign: 'center', color: 'var(--text-secondary)', border: '1px dashed var(--border-color)' }}>
+                  <h4 style={{ fontFamily: 'var(--font-serif)', fontSize: '18px' }}>Your Lookbook is currently empty</h4>
+                  <p style={{ marginTop: '8px', fontSize: '12px' }}>Mix and match components above or save suggestions from the AI Advisor tab.</p>
+                </div>
+              ) : (
+                <div className="lookbook-grid">
+                  {savedOutfits.map(outfit => {
+                    const topItem = clothingItems.find(i => i.id === outfit.topsId);
+                    const bottomItem = clothingItems.find(i => i.id === outfit.bottomsId);
+                    const outerwearItem = clothingItems.find(i => i.id === outfit.outerwearId);
+                    const shoesItem = clothingItems.find(i => i.id === outfit.shoesId);
+
+                    return (
+                      <div key={outfit.id} className="outfit-card">
+                        <div className="outfit-card-header">
+                          <div>
+                            <h4 className="outfit-card-title">{outfit.name}</h4>
+                            <div className="outfit-card-date">{outfit.createdAt}</div>
+                          </div>
+                        </div>
+
+                        <div className="outfit-card-grid">
+                          <div className="outfit-card-img-box" title={topItem?.title || 'None'}>
+                            {topItem ? <img src={topItem.image} alt="" className="outfit-card-img" /> : <span className="outfit-card-img-placeholder">T</span>}
+                          </div>
+                          <div className="outfit-card-img-box" title={bottomItem?.title || 'None'}>
+                            {bottomItem ? <img src={bottomItem.image} alt="" className="outfit-card-img" /> : <span className="outfit-card-img-placeholder">B</span>}
+                          </div>
+                          <div className="outfit-card-img-box" title={outerwearItem?.title || 'None'}>
+                            {outerwearItem ? <img src={outerwearItem.image} alt="" className="outfit-card-img" /> : <span className="outfit-card-img-placeholder">O</span>}
+                          </div>
+                          <div className="outfit-card-img-box" title={shoesItem?.title || 'None'}>
+                            {shoesItem ? <img src={shoesItem.image} alt="" className="outfit-card-img" /> : <span className="outfit-card-img-placeholder">S</span>}
+                          </div>
+                        </div>
+
+                        <div className="outfit-card-notes">
+                          {outfit.notes}
+                        </div>
+
+                        <div className="outfit-card-actions">
+                          <button 
+                            className="delete-btn" 
+                            style={{ margin: 0, padding: '6px 12px', fontSize: '10px' }}
+                            onClick={() => handleDeleteOutfit(outfit.id)}
+                          >
+                            Delete Look
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
           </div>
         )}
 
@@ -585,7 +1126,10 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
                   </div>
                   <div className="outfit-description-box">
                     <strong>Stylist Notes</strong>
-                    {generatedOutfit.description}
+                    <p style={{ marginBottom: '12px', marginTop: '4px' }}>{generatedOutfit.description}</p>
+                    <button className="add-btn" style={{ padding: '8px 14px', fontSize: '11px', textTransform: 'uppercase', width: 'auto', display: 'inline-flex' }} onClick={handleSaveAIOutfit}>
+                      + Save Outfit to Lookbook
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -655,6 +1199,40 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
               </div>
             </div>
 
+            {/* Aesthetic Keywords card */}
+            <div className="chart-card" style={{ gridColumn: 'span 2', borderTop: '1px dashed var(--border-color)', paddingTop: '24px', marginTop: '16px' }}>
+              <div className="chart-header">
+                <h3 className="chart-title">Aesthetic Keywords</h3>
+                <p className="chart-subtitle">Most frequent style tags in collection</p>
+              </div>
+              <div className="popular-tags-list">
+                {(() => {
+                  const tagCounts = {};
+                  clothingItems.forEach(item => {
+                    if (item.tags && Array.isArray(item.tags)) {
+                      item.tags.forEach(tag => {
+                        const cleaned = tag.trim();
+                        if (cleaned) {
+                          tagCounts[cleaned] = (tagCounts[cleaned] || 0) + 1;
+                        }
+                      });
+                    }
+                  });
+                  const sorted = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 15);
+                  
+                  if (sorted.length === 0) {
+                    return <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No keywords found. Add hashtags to your pieces.</span>;
+                  }
+
+                  return sorted.map(([tag, count]) => (
+                    <span key={tag} className="popular-tag-badge">
+                      #{tag} <span className="popular-tag-count">({count})</span>
+                    </span>
+                  ));
+                })()}
+              </div>
+            </div>
+
           </div>
         )}
 
@@ -662,58 +1240,178 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
 
       {/* DETAIL MODAL */}
       {showDetailModal && (
-        <div className="modal-overlay" onClick={() => setShowDetailModal(null)}>
+        <div className="modal-overlay" onClick={() => { setShowDetailModal(null); setIsEditingDetail(false); }}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowDetailModal(null)}>✕</button>
+            <button className="modal-close" onClick={() => { setShowDetailModal(null); setIsEditingDetail(false); }}>✕</button>
             <div className="modal-left">
-              <img src={showDetailModal.image} alt={showDetailModal.title} className="modal-left-img" />
+              <img src={isEditingDetail ? editFormImagePreview : showDetailModal.image} alt={showDetailModal.title} className="modal-left-img" />
             </div>
-            <div className="modal-right">
-              <div>
-                <div className="modal-detail-brand">{showDetailModal.brand}</div>
-                <h2 className="modal-detail-title">{showDetailModal.title}</h2>
+            
+            {isEditingDetail ? (
+              <div className="modal-right">
+                <h3 className="form-title" style={{ marginBottom: '16px' }}>Edit Details</h3>
+                <form onSubmit={handleSaveEdit}>
+                  <div className="form-group">
+                    <label className="form-label">Piece Name *</label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={editFormTitle}
+                      onChange={(e) => setEditFormTitle(e.target.value)}
+                      required 
+                    />
+                  </div>
+
+                  <div className="form-group" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    <div>
+                      <label className="form-label">Category *</label>
+                      <select 
+                        className="form-control"
+                        value={editFormCategory}
+                        onChange={(e) => setEditFormCategory(e.target.value)}
+                      >
+                        <option value="Tops">Tops</option>
+                        <option value="Bottoms">Bottoms</option>
+                        <option value="Outerwear">Outerwear</option>
+                        <option value="Shoes">Shoes</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="form-label">Size</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={editFormSize}
+                        onChange={(e) => setEditFormSize(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '16px' }}>
+                    <div>
+                      <label className="form-label">Brand</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={editFormBrand}
+                        onChange={(e) => setEditFormBrand(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">Color</label>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <input 
+                          type="color" 
+                          className="form-control" 
+                          style={{ padding: '0', height: '30px', width: '30px', border: 'none', cursor: 'pointer' }}
+                          value={editFormColorHex}
+                          onChange={(e) => setEditFormColorHex(e.target.value)}
+                        />
+                        <input 
+                          type="text" 
+                          className="form-control" 
+                          placeholder="Name"
+                          style={{ flexGrow: 1 }}
+                          value={editFormColor}
+                          onChange={(e) => setEditFormColor(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Tags (comma-separated)</label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={editFormTags}
+                      onChange={(e) => setEditFormTags(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Styling Notes</label>
+                    <textarea 
+                      className="form-control" 
+                      rows="3" 
+                      value={editFormNotes}
+                      onChange={(e) => setEditFormNotes(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Piece Photo</label>
+                    <input 
+                      type="file" 
+                      id="edit-file-upload" 
+                      accept="image/*" 
+                      style={{ display: 'none' }}
+                      onChange={handleEditImageChange}
+                    />
+                    <label htmlFor="edit-file-upload" className="image-upload-area" style={{ padding: '12px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Replace wardrobe photo</span>
+                    </label>
+                  </div>
+
+                  <div className="action-btn-row">
+                    <button type="button" className="btn-secondary" style={{ flex: 1 }} onClick={() => setIsEditingDetail(false)}>Cancel</button>
+                    <button type="submit" className="add-btn" style={{ flex: 1.5 }}>Save Changes</button>
+                  </div>
+                </form>
               </div>
-              
-              <div className="modal-specs">
-                <div className="spec-item">
-                  <div className="spec-label">Category</div>
-                  <div className="spec-value">{showDetailModal.category}</div>
+            ) : (
+              <div className="modal-right">
+                <div>
+                  <div className="modal-detail-brand">{showDetailModal.brand}</div>
+                  <h2 className="modal-detail-title">{showDetailModal.title}</h2>
                 </div>
-                <div className="spec-item">
-                  <div className="spec-label">Size</div>
-                  <div className="spec-value">{showDetailModal.size}</div>
-                </div>
-                <div className="spec-item">
-                  <div className="spec-label">Color</div>
-                  <div className="spec-value">
-                    <span className="spec-color-preview" style={{ backgroundColor: showDetailModal.colorHex }} />
-                    {showDetailModal.color}
+                
+                <div className="modal-specs">
+                  <div className="spec-item">
+                    <div className="spec-label">Category</div>
+                    <div className="spec-value">{showDetailModal.category}</div>
+                  </div>
+                  <div className="spec-item">
+                    <div className="spec-label">Size</div>
+                    <div className="spec-value">{showDetailModal.size}</div>
+                  </div>
+                  <div className="spec-item">
+                    <div className="spec-label">Color</div>
+                    <div className="spec-value">
+                      <span className="spec-color-preview" style={{ backgroundColor: showDetailModal.colorHex }} />
+                      {showDetailModal.color}
+                    </div>
+                  </div>
+                  <div className="spec-item">
+                    <div className="spec-label">Metadata</div>
+                    <div className="spec-value" style={{ fontSize: '13px' }}>{showDetailModal.tags.length} Tags</div>
                   </div>
                 </div>
-                <div className="spec-item">
-                  <div className="spec-label">Metadata</div>
-                  <div className="spec-value" style={{ fontSize: '13px' }}>{showDetailModal.tags.length} Tags</div>
+
+                <div className="modal-section">
+                  <div className="modal-section-title">Fit & Details</div>
+                  <p className="modal-notes">{showDetailModal.notes}</p>
+                </div>
+
+                <div className="modal-section">
+                  <div className="modal-section-title">Tags</div>
+                  <div className="modal-tags">
+                    {showDetailModal.tags.map((tag, idx) => (
+                      <span key={idx} className="modal-tag">#{tag}</span>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '12px', marginTop: 'auto', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                  <button className="btn-secondary" style={{ flex: 1, padding: '10px 0' }} onClick={() => handleEnterEditMode(showDetailModal)}>
+                    Edit Details
+                  </button>
+                  <button className="delete-btn" style={{ flex: 1, margin: 0, padding: '10px 0' }} onClick={() => handleDeleteItem(showDetailModal.id)}>
+                    Remove Piece
+                  </button>
                 </div>
               </div>
-
-              <div className="modal-section">
-                <div className="modal-section-title">Fit & Details</div>
-                <p className="modal-notes">{showDetailModal.notes}</p>
-              </div>
-
-              <div className="modal-section">
-                <div className="modal-section-title">Tags</div>
-                <div className="modal-tags">
-                  {showDetailModal.tags.map((tag, idx) => (
-                    <span key={idx} className="modal-tag">#{tag}</span>
-                  ))}
-                </div>
-              </div>
-
-              <button className="delete-btn" onClick={() => handleDeleteItem(showDetailModal.id)}>
-                Remove Piece
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -859,7 +1557,7 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
       <nav className="bottom-nav">
         <button 
           className={`bottom-nav-btn ${activeTab === 'closet' ? 'active' : ''}`}
-          onClick={() => setActiveTab('closet')}
+          onClick={() => { setActiveTab('closet'); setIsEditingDetail(false); }}
         >
           <svg className="bottom-nav-icon" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <rect x="3" y="3" width="7" height="9" rx="1"></rect>
@@ -870,8 +1568,17 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
           <span>Collection</span>
         </button>
         <button 
+          className={`bottom-nav-btn ${activeTab === 'lookbook' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('lookbook'); setIsEditingDetail(false); }}
+        >
+          <svg className="bottom-nav-icon" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+          </svg>
+          <span>Lookbook</span>
+        </button>
+        <button 
           className={`bottom-nav-btn ${activeTab === 'advisor' ? 'active' : ''}`}
-          onClick={() => setActiveTab('advisor')}
+          onClick={() => { setActiveTab('advisor'); setIsEditingDetail(false); }}
         >
           <svg className="bottom-nav-icon" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
@@ -880,7 +1587,7 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
         </button>
         <button 
           className={`bottom-nav-btn ${activeTab === 'analytics' ? 'active' : ''}`}
-          onClick={() => setActiveTab('analytics')}
+          onClick={() => { setActiveTab('analytics'); setIsEditingDetail(false); }}
         >
           <svg className="bottom-nav-icon" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <line x1="18" y1="20" x2="18" y2="10"></line>
@@ -890,6 +1597,39 @@ Give a stylish, encouraging, and clear fashion response. Refer specifically to i
           <span>Insights</span>
         </button>
       </nav>
+
+      {/* Elegant Editorial Toast Notifications */}
+      {toast.show && (
+        <div className="toast-notification animate-fade-in-up">
+          <div className="toast-text">{toast.message}</div>
+        </div>
+      )}
+
+      {/* Elegant Custom Confirmation Dialog */}
+      {confirmModal.show && (
+        <div className="modal-overlay" onClick={() => setConfirmModal({ show: false, message: '', onConfirm: null })}>
+          <div className="confirm-modal-content" onClick={(e) => e.stopPropagation()}>
+            <h3 className="confirm-title">Confirm Action</h3>
+            <p className="confirm-message">{confirmModal.message}</p>
+            <div className="confirm-actions">
+              <button 
+                type="button"
+                className="btn-secondary" 
+                onClick={() => setConfirmModal({ show: false, message: '', onConfirm: null })}
+              >
+                Cancel
+              </button>
+              <button 
+                type="button"
+                className="btn-danger" 
+                onClick={confirmModal.onConfirm}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
